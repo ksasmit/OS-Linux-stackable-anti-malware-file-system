@@ -1,0 +1,232 @@
+		CSE-506 (Fall 2015) Homework Assignment #2
+		  (100 points, 18% of your overall grade)
+			   Version 3 (10/22/2015)
+		      Due Sunday 11/08/2015 @ 11:59pm
+
+* PURPOSE:
+
+To become familiar with the VFS layer of Linux, and especially with
+extensible file systems APIs.  To build a useful file system using stacking
+technologies.
+
+You will use the "wrapfs" stackable file system as a starting point for this
+assignment.  You will modify wrapfs to add anti-malware support to detect
+and prevent, for example, virus patterns in files.
+
+You must work on HW2 *alone*.  No teams allowed!
+
+Note that being the second homework assignment in the class, it is on
+purpose made a bit more open ended.  Not every little detail would be given
+to you as in HW1.  Your goal would be to follow the spec below, but to also
+think about how to address all sorts of corner cases that I do not
+specifically list below.  As time goes by this semester, I expect all of you
+to demonstrate an increased level of maturity and expertise in this class.
+
+* RESOURCES
+
+For this assignment, the following resources would be handy.  Study them
+well.
+
+(a) The Linux kernel source code, obviously.  Pay special attention to the
+    Documentation/ subdirectory, esp. files related to locking,
+    filesystems/*.txt, vfs.txt, and others.  There's a lot of good stuff
+    there, which you'd have to find and read carefully.
+
+(b) The Wrapfs kernel sources in the hw2-USER git repository that each of
+    you have, under fs/wrapfs.  Note also the file
+    Documentation/filesystems/wrapfs.txt.  This Wrapfs file system is under
+    2,000 LoC, and hence is easier to study in its entirety.
+
+(c) Assorted papers related to stackable file systems which were published
+    here:
+
+	http://www.fsl.cs.sunysb.edu/project-fist.html
+
+    Especially useful would be the following:
+
+	"Avfs: An On-Access Anti-Virus File System"
+	"UnionFS: User- and Community-oriented Development of a Unification Filesystem"
+	"Versatility and Unix Semantics in Namespace Unification"
+	"I3FS: An In-Kernel Integrity Checker and Intrusion Detection File System"
+	"A Stackable File System Interface for Linux"
+	"Extending File Systems Using Stackable Templates"
+	"FiST: A Language for Stackable File Systems"
+	"On Incremental File System Development"
+
+(d) Browsable GIT-Web sources here, especially wrapfs-4.0 and
+    unionfs-3.x.y sources:
+
+	http://git.fsl.cs.sunysb.edu/
+
+* INTRODUCTION:
+
+In a stackable file system, each VFS-based object at the stackable file
+system (e.g., in Wrapfs) has a link to one other object on the lower file
+system (sometimes called the "hidden" object).  We identify this
+symbolically as X->X' where "X" is an object at the upper layer, and X' is
+an object on the lower layer.  This form of stacking is a single-layer
+linear stacking.
+
+* DETAILS:
+
+Write a stackable, anti-malware file system called amfs.  Amfs should detect
+and prevent attempts to read or write bad files.  A "bad file" is defined as
+one that contains at least one known malware (e.g., virus) pattern.  Amfs
+should be based on wrapfs whose source code is in fs/wrapfs.  I *strongly*
+advise you NOT to modify wrapfs itself: keep it as a baseline to compare
+your code against.  Instead, make a copy of fs/wrapfs as fs/amfs, rename all
+files and symbols/functions from "wrapfs" to "amfs", and modify code in
+fs/amfs only.
+
+>>PATTERN DATABASE
+
+You should design a simple file containing plain strings, one per line,
+delimited by \n.  Each line represents one bad pattern to look for.
+Patterns can be as long or as short as you want.  Patterns should be matched
+(case sensitive) using strcmp/memcmp like functions, or any str* function
+you think is better.  An example pattern file could look like this:
+
+$ cat pattern.db
+badtext
+hello
+Confidential
+
+Amfs should take a mount time argument to pass the name of the pattern file,
+for example:
+
+# mount -t amfs -o pattdb=/mypatterns.db /some/lower/path /mnt/amfs
+
+(Note that you may need to first run "insmod ./fs/amfs/amfs.ko" to
+insert the new amfs module; of course, you'll need to remove an older one
+that's already loaded, if any.)
+
+After that, you should be able to "cd" to /mnt/amfs and issue normal file
+system commands.  Those commands will cause the VFS to call methods in amfs.
+You can stick printk lines in amfs to see what gets called and when.
+
+Your code should open the pattern DB file, read it, and keep the list of
+patterns to match against in a data structure in memory that you can refer
+to from anywhere.  I suggest you attach the pattern data structure to the
+amfs superblock private "void* pointer.  You'll need to figure out how
+mount options are passed to file systems and make the needed changes to
+amfs's code.
+
+Clearly, you should check for all possible errors related to the pattern DB
+file: permission, existence, size of it, etc.  (After HW1, I expect you to
+know and think about everything that could go wrong.)
+
+Next, you need to add support to manage the pattern DB file.  Design an
+ioctl(2) interface in amfs, to support the following actions: add pattern,
+remove pattern, and list the contents of the pattern DB.  This is useful as
+any anti-malware software needs to update its pattern DB periodically.
+Study how ioctl's are passed to file systems and modify amfs as needed.
+Demonstrate your ioctls using a user-level program you write, called
+amfsctl.  For example:
+
+1. To list known patterns
+$ ./amfsctl -l /mnt/amfs
+
+2. To add a new pattern
+$ ./amfsctl -a "newpatt" /mnt/amfs
+
+3. To remove an old pattern
+$ ./amfsctl -r "oldpatt" /mnt/amfs
+
+Of course, check for errors as needed.  Note you'll need to pass the mount
+point to amfsctl so that your ioctl message would go to the right file
+system (amfs) and not some other f/s.
+
+>>FILE SYSTEM METHODS
+
+Amfs should intercept all read and write file system methods, and check the
+buffers users pass against any of the known malware patterns.  If even one
+pattern matches, the file is deemed bad.  If the file is deemed bad, don't
+return success.  Instead, you should return an error and "quarantine" the
+file.  To quarantine the file, you must mark it as "bad": you can do so by
+adding an extended attribute (xattar or EA) such that only the kernel can
+control this EA (i.e., it can be read but not removed from userland, even by
+root).
+
+If a file is marked as bad using the EA, you should not allow the file to be
+opened, read, written, or anything that could lead bad data to be used.  There
+should be no way for a malicious user to subvert access through the file
+system and get access to that file.  In fact, you should also purge all
+records of that file from the page cache and dcache, so cached bad data
+isn't returned back to user.  Even attempting to lookup a bad file should
+return an error (say, ENOENT).  Even better is if listing a directory
+(readdir) would hide bad files from the namespace.  You can, however, allow
+a bad file to be deleted.
+
+* GIT REPOSITORY
+
+For this assignment, we've created clean GIT kernel repositories for each of
+you.  Do not use the one from HW1 for this second assignment; but you can
+copy a good .config you've had in HW1 and use that for your HW2 kernel.  You
+can clone your new GIT repo as follows, using similar instructions as in
+HW1:
+
+# git clone ssh://USER@scm.cs.stonybrook.edu:130/scm/cse506git-f15/hw2-USER
+
+Note that if you don't have enough disk space on your VM, it'll be a good
+idea to remove the older hw1-USER repo to make space.
+
+
+* SUBMISSION
+
+Simply git-commit and git-push your changes to your cloned git repository; a
+successful git-push will result in an email going to you, confirming the
+commit and push.  Don't forget to include the README.HW2 file.  If for some
+reason you decided to add other file(s) to your GIT repository, please
+mention this in README.HW2 so we don't miss it during grading (and justify
+why a new file was needed).
+
+Also note that we will just do a git clone of your final repository and run
+make, make modules_install, and make install as usual.  You must not assume
+that we will do ANY modification in your code.  Your code MUST compile and
+run as it is.  You will lose all points in submission section IF your code
+doesn't compile/run as checked out.
+
+If you attempt any EXTRA CREDIT functionality, your README MUST specify
+exactly how to compile your code with extra credit enabled.  By default,
+your code MUST NOT compile extra credit code.
+
+* EXTRA CREDIT (OPTIONAL, MAX 20 pts)
+
+A. [10 pts] protect pattern file
+
+The pattern file ideally should not be modifiable by users (esp. hackers).
+So you should encrypt it just as you did in HW1, and store a safe preamble
+to verify the decryption key.  When you mount the file system, you have to
+give the name of the pattern DB file (see above).  But now, you cannot open
+or read/write until a proper key was given to decrypt it.  Add another amfs
+ioctl() to pass the key to the kernel; verify the key is correct, and then
+open the file.  Note: this means that until the pattern file has been
+decrypted, NO other file system methods should be allowed (that is, users
+cannot open/read/write files because there's no way to scan the files yet).
+
+B. [15 pts] On-open/close file scan, tri-state file status.
+
+Scanning files on read/write suffers from patterns that cross user buffers.
+That is, a bad pattern can be just on the boundary of two user buffers and
+it won't be detected.  To solve this, add support to scan whole files on
+open and close.  Since files can be large, be sure to scan them efficiently
+so you can detect bad patterns even if they are long (but no longer than 256
+chars, to keep things simple).  Moreover, there's no need to scan files that
+are known to be bad/good.  So, you need to record the state of a file (in an
+EA) as either known clean or known bad; if neither state is known, then the
+file's state is considered to be unknown.  If a file is bad, don't scan it
+unless the pattern DB has changed.  If a file is good, don't scan it unless
+the pattern DB has changed.  If the file's state is unknown, scan it, and
+then record in an EA if it's good/bad.  Try to be efficient: if a file is
+being opened for reading, scan it if needed on open; but if the file is
+being truncated on open(), then all of its data is lost, and no need to scan
+it.  If the file's data was modified while opened(), then you should scan it
+entirely on close(), but again, only if the file was modified while it was
+opened.  In short, you need to design a state machine to decide when to scan
+a file based on its current state and actions that took place in it.
+
+* ChangeLog: a list of changes that this description had
+
+v1: original version
+v2: fix minor typo
+v3: fix minor typo in insmod
